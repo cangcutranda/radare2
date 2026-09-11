@@ -449,41 +449,76 @@ jobs:
 
   # disabled because the ndk link is broken for a while
   android-meson:
-    if: contains(github.ref, 'android')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         arch:
-          - x86_64
-          # - aarch64
+          - aarch64
+          # - x86_64
           # - arm
     steps:
     - uses: actions/checkout@v7
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1.6.0
+      id: setup-ndk
+      with:
+        ndk-version: r29
+        link-to-sdk: true
+
+    - name: NDK Path for Meson
+      run: |
+        sudo mkdir -p /usr/local/lib/android/sdk
+        sudo ln -sf $ANDROID_NDK_ROOT /usr/local/lib/android/sdk/ndk-bundle
+
     - name: Install dependencies
       run: |
         sudo apt-get --assume-yes update
-        sudo apt-get --assume-yes install pax wget cabextract unzip python3-wheel python3-setuptools python3-pip
-        sudo pip3 install --user meson ninja --break-system-packages
+        sudo apt-get --assume-yes install pax wget cabextract unzip python3-wheel python3-setuptools python3-pip meson ninja-build
+
     - name: Extract r2 version
       shell: bash
       run: echo "branch=`./configure -qV`" >> $GITHUB_OUTPUT
       id: r2v
+
+    - name: Use bash as /bin/sh
+      run: sudo ln -sf /bin/bash /bin/sh
+
+    # FIX 1: Prebuild sdb sebagai host tool (native x86_64),
+    # supaya tidak dicross-compile ke ARM dan gagal dieksekusi.
+    - name: Build host sdb
+      run: |
+        meson setup build-host --buildtype release
+        ninja -C build-host subprojects/sdb/sdb
+        echo "$PWD/build-host/subprojects/sdb" >> $GITHUB_PATH
+
+    # FIX 2: Hapus CFLAGS/LDFLAGS="-static" — NDK tidak support static libc.
+    # Cukup pakai --default-library static untuk library r2.
     - name: Compile with meson
       run: |
         export PATH=${HOME}/.local/bin:${PATH}
-        CFLAGS="-static" LDFLAGS="-static" meson --buildtype release --default-library static --prefix=/tmp/android-dir -Dblob=true build --cross-file .github/meson-android-${{ matrix.arch }}.ini
+        meson --buildtype release \
+          --default-library static \
+          --prefix=/tmp/android-dir \
+          -Dblob=true \
+          build \
+          --cross-file .github/meson-android-${{ matrix.arch }}.ini
         ninja -C build && ninja -C build install
+
+    # FIX 3: Hapus step duplikat — hanya satu step Create + satu upload.
     - name: Create radare2-${{ steps.r2v.outputs.branch }}-android-${{ matrix.arch }}.tar.gz
       run: |
         cd /tmp
         rm -rf android-dir/include android-dir/lib
-        tar --transform 's/android-dir/data\/data\/org.radareorg.radare2installer/g' -czvf radare2-${{ steps.r2v.outputs.branch }}-android-${{ matrix.arch }}.tar.gz android-dir/
+        tar --transform 's/android-dir/data\/data\/org.radareorg.radare2installer/g' \
+          -czvf radare2-${{ steps.r2v.outputs.branch }}-android-${{ matrix.arch }}.tar.gz \
+          android-dir/
+
     - uses: actions/upload-artifact@v7
       with:
         name: android-meson-${{ matrix.arch }}
         path: /tmp/radare2-${{ steps.r2v.outputs.branch }}-android-${{ matrix.arch }}.tar.gz
-
 
   # Windows
   w32-meson:
